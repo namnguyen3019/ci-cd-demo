@@ -1,0 +1,339 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  # AWS Configuration
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY_FRONTEND: todo-app-frontend
+  ECR_REPOSITORY_BACKEND: todo-app-backend
+  ECS_SERVICE_FRONTEND: todo-frontend-service
+  ECS_SERVICE_BACKEND: todo-backend-service
+  ECS_CLUSTER: todo-app-cluster
+  
+  # Application Configuration
+  POSTGRES_DB: todoapp_test
+  POSTGRES_USER: todouser
+  POSTGRES_PASSWORD: todopass
+
+jobs:
+  # ==========================================
+  # CI JOBS - Testing and Validation
+  # ==========================================
+  
+  lint-and-test-frontend:
+    name: Frontend - Lint and Build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: Install dependencies
+      working-directory: ./frontend
+      run: npm ci
+    
+    - name: Run ESLint
+      working-directory: ./frontend
+      run: npm run lint
+    
+    - name: Type check with TypeScript
+      working-directory: ./frontend
+      run: npx tsc --noEmit
+    
+    - name: Build application
+      working-directory: ./frontend
+      run: npm run build
+    
+    - name: Cache build artifacts
+      uses: actions/cache@v3
+      with:
+        path: |
+          frontend/.next
+          frontend/node_modules
+        key: ${{ runner.os }}-frontend-${{ hashFiles('frontend/package-lock.json') }}
+
+  test-backend:
+    name: Backend - Test with PostgreSQL
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+        cache-dependency-path: backend/requirements.txt
+    
+    - name: Install dependencies
+      working-directory: ./backend
+      run: |
+        pip install -r requirements.txt
+        pip install pytest pytest-django
+    
+    - name: Run Django system checks
+      working-directory: ./backend
+      env:
+        POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        POSTGRES_USER: ${{ env.POSTGRES_USER }}
+        POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        POSTGRES_HOST: localhost
+        POSTGRES_PORT: 5432
+      run: python manage.py check
+    
+    - name: Run migrations
+      working-directory: ./backend
+      env:
+        POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        POSTGRES_USER: ${{ env.POSTGRES_USER }}
+        POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        POSTGRES_HOST: localhost
+        POSTGRES_PORT: 5432
+      run: python manage.py migrate
+    
+    - name: Run tests
+      working-directory: ./backend
+      env:
+        POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        POSTGRES_USER: ${{ env.POSTGRES_USER }}
+        POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        POSTGRES_HOST: localhost
+        POSTGRES_PORT: 5432
+      run: python manage.py test
+
+  integration-test:
+    name: Integration Tests with Docker Compose
+    runs-on: ubuntu-latest
+    needs: [lint-and-test-frontend, test-backend]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Build and test with docker-compose
+      run: |
+        # Build the test environment
+        docker-compose -f docker-compose.test.yml up --build -d
+        
+        # Wait for services to be ready
+        sleep 30
+        
+        # Run backend tests in container
+        docker-compose -f docker-compose.test.yml exec -T backend python manage.py test
+        
+        # Test API endpoints
+        docker-compose -f docker-compose.test.yml exec -T backend python manage.py shell -c "
+        import requests
+        import time
+        time.sleep(5)
+        response = requests.get('http://localhost:8000/api/todos/')
+        assert response.status_code == 200
+        print('API endpoint test passed')
+        "
+    
+    - name: Cleanup
+      if: always()
+      run: docker-compose -f docker-compose.test.yml down -v
+
+  # ==========================================
+  # CD JOBS - Build and Deploy
+  # ==========================================
+  
+  build-and-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [integration-test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    outputs:
+      frontend-image: ${{ steps.build-frontend.outputs.image }}
+      backend-image: ${{ steps.build-backend.outputs.image }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+    
+    - name: Build and push frontend image
+      id: build-frontend
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build frontend image
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_FRONTEND:$IMAGE_TAG ./frontend
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_FRONTEND:latest ./frontend
+        
+        # Push frontend image
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_FRONTEND:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_FRONTEND:latest
+        
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY_FRONTEND:$IMAGE_TAG" >> $GITHUB_OUTPUT
+    
+    - name: Build and push backend image
+      id: build-backend
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build backend image
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:$IMAGE_TAG ./backend
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:latest ./backend
+        
+        # Push backend image
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:latest
+        
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY_BACKEND:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy-to-ecs:
+    name: Deploy to AWS ECS Fargate
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Update backend task definition
+      id: backend-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: .aws/task-definition-backend.json
+        container-name: backend
+        image: ${{ needs.build-and-push.outputs.backend-image }}
+    
+    - name: Update frontend task definition
+      id: frontend-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: .aws/task-definition-frontend.json
+        container-name: frontend
+        image: ${{ needs.build-and-push.outputs.frontend-image }}
+    
+    - name: Deploy backend to Amazon ECS
+      uses: aws-actions/amazon-ecs-deploy-service@v1
+      with:
+        service: ${{ env.ECS_SERVICE_BACKEND }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
+        task-definition: ${{ steps.backend-task-def.outputs.task-definition }}
+    
+    - name: Deploy frontend to Amazon ECS
+      uses: aws-actions/amazon-ecs-deploy-service@v1
+      with:
+        service: ${{ env.ECS_SERVICE_FRONTEND }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
+        task-definition: ${{ steps.frontend-task-def.outputs.task-definition }}
+
+  run-migrations:
+    name: Run Database Migrations
+    runs-on: ubuntu-latest
+    needs: [deploy-to-ecs]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Run Django migrations via ECS Exec
+      run: |
+        # Get the first running task ARN for the backend service
+        TASK_ARN=$(aws ecs list-tasks \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --service-name ${{ env.ECS_SERVICE_BACKEND }} \
+          --desired-status RUNNING \
+          --query 'taskArns[0]' \
+          --output text)
+        
+        if [ "$TASK_ARN" != "None" ] && [ "$TASK_ARN" != "" ]; then
+          echo "Running migrations on task: $TASK_ARN"
+          
+          # Execute migration command
+          aws ecs execute-command \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --task $TASK_ARN \
+            --container backend \
+            --interactive \
+            --command "python manage.py migrate"
+        else
+          echo "No running tasks found for backend service"
+          exit 1
+        fi
+
+  # ==========================================
+  # NOTIFICATION JOB
+  # ==========================================
+  
+  notify:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: [run-migrations]
+    if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Notify success
+      if: needs.run-migrations.result == 'success'
+      run: |
+        echo "🚀 Deployment successful!"
+        echo "Frontend: Deployed to ECS"
+        echo "Backend: Deployed to ECS with migrations completed"
+    
+    - name: Notify failure
+      if: needs.run-migrations.result == 'failure'
+      run: |
+        echo "❌ Deployment failed!"
+        echo "Check the logs for more details"
+        exit 1 
