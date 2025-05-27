@@ -1,10 +1,10 @@
 'use client';
 
-import TodoForm from '@/components/TodoForm';
-import TodoItem from '@/components/TodoItem';
-import { todoApi } from '@/services/api';
-import { CreateTodoRequest, Todo } from '@/types/todo';
 import { useEffect, useState } from 'react';
+import TodoForm from '../components/TodoForm';
+import TodoItem from '../components/TodoItem';
+import { todoApi } from '../services/api';
+import { CreateTodoRequest, Todo } from '../types/todo';
 
 export default function Home() {
   const [todos, setTodos] = useState<Todo[]>([]);
