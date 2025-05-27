@@ -267,7 +267,7 @@ jobs:
         image: ${{ needs.build-and-push.outputs.frontend-image }}
     
     - name: Deploy backend to Amazon ECS
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
       with:
         task-definition: ${{ steps.backend-task-def.outputs.task-definition }}
         service: ${{ env.ECS_SERVICE_BACKEND }}
@@ -275,7 +275,7 @@ jobs:
         wait-for-service-stability: true
     
     - name: Deploy frontend to Amazon ECS
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
       with:
         task-definition: ${{ steps.frontend-task-def.outputs.task-definition }}
         service: ${{ env.ECS_SERVICE_FRONTEND }}
