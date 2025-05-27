@@ -1,8 +1,5 @@
 FROM node:18-alpine
 
-# Set environment variables
-ENV NODE_ENV=production
-
 WORKDIR /app
 
 # Install curl for health checks
@@ -16,6 +13,7 @@ RUN addgroup -g 1001 -S nodejs && \
 COPY package*.json ./
 
 # Install all dependencies (including devDependencies for build)
+# Don't set NODE_ENV=production yet as we need devDependencies for build
 RUN npm ci
 
 # Copy source code
@@ -24,7 +22,8 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Remove devDependencies to reduce image size
+# Now set production environment and remove devDependencies
+ENV NODE_ENV=production
 RUN npm prune --production
 
 # Change ownership of the app directory
