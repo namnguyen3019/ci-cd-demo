@@ -214,4 +214,4 @@ docker-compose down -v
 docker-compose up --build
 ```
 
-This will remove all containers, volumes, and rebuild from scratch. 
+This will remove all containers, volumes, and rebuild from scratch. # Todo App - Deployment triggered on Mon May 26 19:41:36 CDT 2025
