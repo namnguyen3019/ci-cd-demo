@@ -22,15 +22,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project
 COPY . .
 
+# Make entrypoint script executable
+RUN chmod +x entrypoint.sh
+
 # Create static files directory and set permissions
 RUN mkdir -p /app/staticfiles && \
     chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
-
-# Collect static files
-RUN python manage.py collectstatic --noinput
 
 # Expose port
 EXPOSE 8000
@@ -40,4 +40,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/api/todos/ || exit 1
 
 # Run the application
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"] 
+CMD ["./entrypoint.sh"] 
