@@ -136,7 +136,10 @@ jobs:
         POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
         POSTGRES_HOST: localhost
         POSTGRES_PORT: 5432
-      run: python manage.py test
+        DJANGO_SETTINGS_MODULE: todoproject.settings
+      run: |
+        python manage.py test --verbosity=2
+        echo "Backend tests completed successfully"
 
   integration-test:
     name: Integration Tests with Docker Compose
