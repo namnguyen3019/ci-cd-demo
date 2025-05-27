@@ -267,20 +267,20 @@ jobs:
         image: ${{ needs.build-and-push.outputs.frontend-image }}
     
     - name: Deploy backend to Amazon ECS
-      uses: aws-actions/amazon-ecs-deploy-service@v1
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
       with:
+        task-definition: ${{ steps.backend-task-def.outputs.task-definition }}
         service: ${{ env.ECS_SERVICE_BACKEND }}
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true
-        task-definition: ${{ steps.backend-task-def.outputs.task-definition }}
     
     - name: Deploy frontend to Amazon ECS
-      uses: aws-actions/amazon-ecs-deploy-service@v1
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
       with:
+        task-definition: ${{ steps.frontend-task-def.outputs.task-definition }}
         service: ${{ env.ECS_SERVICE_FRONTEND }}
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true
-        task-definition: ${{ steps.frontend-task-def.outputs.task-definition }}
 
   run-migrations:
     name: Run Database Migrations
